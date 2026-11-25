@@ -11,12 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unpack project zip (only if the project was uploaded as a zip)
+      - name: Unpack project zip if present, then check files
         run: |
-          if [ ! -f settings.gradle.kts ] && [ -f via-project.zip ]; then
-            unzip -q -o via-project.zip
-          fi
-          ls
+          if [ -f via-project.zip ]; then unzip -q -o via-project.zip; fi
+          echo "--- repo root ---"; ls -la
+          echo "--- app folder ---"; ls -la app || true
+          test -f app/build.gradle.kts || { echo "ERROR: app/build.gradle.kts is missing from the repository"; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
