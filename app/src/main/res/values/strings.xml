@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">VIA</string>
+    <string name="app_full_name">VIA – VIP Intelligent Assistant</string>
+    <string name="app_tagline">Your Personal AI Assistant</string>
+    <string name="company_name">VIP Studios And Creations</string>
+    <string name="copyright_notice">© 2026 VIP Studios And Creations</string>
 </resources>

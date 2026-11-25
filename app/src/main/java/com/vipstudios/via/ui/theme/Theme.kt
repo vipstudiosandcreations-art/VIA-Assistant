@@ -2,10 +2,17 @@ package com.vipstudios.via.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.vipstudios.via.R
 
 val ViaBlack = Color(0xFF050810)
 val ViaNavy = Color(0xFF0B1226)
@@ -14,6 +21,58 @@ val ViaRoyal = Color(0xFF2457FF)
 val ViaCyan = Color(0xFF00D4FF)
 val ViaGold = Color(0xFFFFC83D)
 val ViaGoldDeep = Color(0xFFB8860B)
+
+val OrbitronFontFamily = FontFamily(
+    Font(R.font.orbitron, FontWeight.Normal),
+    Font(R.font.orbitron, FontWeight.SemiBold),
+    Font(R.font.orbitron, FontWeight.Bold),
+    Font(R.font.orbitron, FontWeight.Black)
+)
+
+val PlusJakartaFontFamily = FontFamily(
+    Font(R.font.plus_jakarta_sans, FontWeight.Normal),
+    Font(R.font.plus_jakarta_sans, FontWeight.Medium),
+    Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
+    Font(R.font.plus_jakarta_sans, FontWeight.Bold)
+)
+
+val ViaTypography = Typography(
+    displaySmall = TextStyle(
+        fontFamily = OrbitronFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 26.sp,
+        letterSpacing = 1.4.sp
+    ),
+    titleLarge = TextStyle(
+        fontFamily = OrbitronFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
+        letterSpacing = 1.0.sp
+    ),
+    titleMedium = TextStyle(
+        fontFamily = PlusJakartaFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = PlusJakartaFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 15.sp,
+        lineHeight = 22.sp
+    ),
+    bodyMedium = TextStyle(
+        fontFamily = PlusJakartaFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = OrbitronFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 11.sp,
+        letterSpacing = 0.8.sp
+    )
+)
 
 private val DarkScheme = darkColorScheme(
     primary = ViaGold, onPrimary = Color.Black,
@@ -43,5 +102,9 @@ fun ViaTheme(mode: String, content: @Composable () -> Unit) {
         "light" -> false
         else -> isSystemInDarkTheme()
     }
-    MaterialTheme(colorScheme = if (dark) DarkScheme else LightScheme, content = content)
+    MaterialTheme(
+        colorScheme = if (dark) DarkScheme else LightScheme,
+        typography = ViaTypography,
+        content = content
+    )
 }

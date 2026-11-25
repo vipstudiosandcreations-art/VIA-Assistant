@@ -43,6 +43,34 @@ class Store(context: Context) {
         get() = sp.getBoolean("continuous", false)
         set(v) = sp.edit().putBoolean("continuous", v).apply()
 
+    var voiceResponseEnabled: Boolean
+        get() = sp.getBoolean("voice_response", true)
+        set(v) = sp.edit().putBoolean("voice_response", v).apply()
+
+    var backgroundAssistantEnabled: Boolean
+        get() = sp.getBoolean("bg_assistant_enabled", false)
+        set(v) = sp.edit().putBoolean("bg_assistant_enabled", v).apply()
+
+    var localWakeWordEnabled: Boolean
+        get() = sp.getBoolean("local_wake_word_enabled", false)
+        set(v) = sp.edit().putBoolean("local_wake_word_enabled", v).apply()
+
+    var sheetsEnabled: Boolean
+        get() = sp.getBoolean("sheets_enabled", false)
+        set(v) = sp.edit().putBoolean("sheets_enabled", v).apply()
+
+    var use24HourClock: Boolean
+        get() = sp.getBoolean("use_24h_clock", false)
+        set(v) = sp.edit().putBoolean("use_24h_clock", v).apply()
+
+    var batteryVoiceAlertsEnabled: Boolean
+        get() = sp.getBoolean("battery_voice_alerts", true)
+        set(v) = sp.edit().putBoolean("battery_voice_alerts", v).apply()
+
+    var callMonitoringEnabled: Boolean
+        get() = sp.getBoolean("call_monitoring_enabled", false)
+        set(v) = sp.edit().putBoolean("call_monitoring_enabled", v).apply()
+
     // ---------- chat ----------
     fun messages(): List<ChatMessage> = read("messages") {
         ChatMessage(it.getLong("id"), it.getBoolean("u"), it.getString("t"), it.getLong("ts"))

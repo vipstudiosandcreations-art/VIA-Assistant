@@ -15,12 +15,15 @@ import android.os.BatteryManager
 import android.provider.AlarmClock
 import android.provider.Settings
 import com.vipstudios.via.data.Store
-import java.text.SimpleDateFormat
-import java.util.Date
+import com.vipstudios.via.device.CallControlManager
+import com.vipstudios.via.device.DeviceStatusMonitor
+import com.vipstudios.via.time.TimeQueryResult
+import com.vipstudios.via.time.WorldTimeEngine
 import java.util.Locale
 
 sealed class CommandResult {
     data class Handled(val reply: String) : CommandResult()
+    data class Navigate(val route: String, val reply: String) : CommandResult()
     object NotACommand : CommandResult()
 }
 
@@ -28,10 +31,15 @@ sealed class CommandResult {
  * Understands phone commands (English, with basic Hindi and Kannada keywords) and runs them
  * through official Android APIs and intents only.
  *
- * Safety: messages and calls are only PREPARED. WhatsApp or the dialer opens and the user
- * must tap Send or Call themselves. VIA never sends or calls on its own.
+ * Safety: messages and calls are only PREPARED unless the user grants explicit Android call
+ * permissions and invokes Accept/Decline. VIA never calls or records on its own.
  */
-class CommandEngine(private val ctx: Context, private val store: Store) {
+class CommandEngine(
+    private val ctx: Context,
+    private val store: Store,
+    private val deviceMonitor: DeviceStatusMonitor? = null,
+    private val callManager: CallControlManager? = null
+) {
     private var torchOn = false
 
     private fun h(s: String) = CommandResult.Handled(s)
@@ -77,6 +85,31 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
             )
         }
 
+        // ----- VIA screens & device navigation -----
+        if (Regex("\\b(open camera|take a photo|take a picture|capture photo|via camera)\\b|कैमरा|ಕ್ಯಾಮೆರಾ").containsMatchIn(l)) {
+            return CommandResult.Navigate("camera", "Opening VIA camera.")
+        }
+        if (Regex("\\b(open device controls|device controls|phone controls|show device controls)\\b").containsMatchIn(l)) {
+            return CommandResult.Navigate("controls", "Opening VIA Device Controls.")
+        }
+        if (Regex("\\b(open world clock|open clock|world clock)\\b").containsMatchIn(l)) {
+            return CommandResult.Navigate("clock", "Opening real-time world clock.")
+        }
+
+        // ----- incoming call safe actions -----
+        if (Regex("\\b(answer|accept|pick up)\\s+(?:the\\s+)?call\\b").containsMatchIn(l)) {
+            val mgr = callManager ?: return h("Call controls aren't active right now. Open Device Controls to enable call permissions.")
+            val res = mgr.answerIncomingCall()
+            if (!res.succeeded && res.offerSystemAction) {
+                mgr.openSupportedPhoneFallback()
+            }
+            return h(res.message)
+        }
+        if (Regex("\\b(decline|reject|end)\\s+(?:the\\s+)?call\\b").containsMatchIn(l)) {
+            val mgr = callManager ?: return h("Call controls aren't active right now. Open Device Controls to enable call permissions.")
+            return h(mgr.declineIncomingCall().message)
+        }
+
         // ----- open apps / settings -----
         val openTarget = Regex("^(?:please )?(?:open|launch|start)\\s+(.+)$").find(l)?.groupValues?.get(1)
             ?: Regex("^(.+?)\\s+(?:खोलो|खोलिए|खोलें)$").find(l)?.groupValues?.get(1)
@@ -84,14 +117,21 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
         if (openTarget != null) return h(openTarget(openTarget.trim()))
 
         // ----- device -----
+        if (Regex("\\b(phone status|device status|device info|system status)\\b").containsMatchIn(l)) {
+            return h(deviceMonitor?.buildSummarySpeech() ?: "${battery()} ${network()}")
+        }
+        if (Regex("\\bbluetooth\\b").containsMatchIn(l)) {
+            val bt = deviceMonitor?.refreshNow()?.bluetoothStatus
+            return h(if (bt != null) "Bluetooth is $bt." else settings(Settings.ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings"))
+        }
         if (Regex("flashlight|torch|फ्लैशलाइट|टॉर्च|ಟಾರ್ಚ್|ಫ್ಲ್ಯಾಶ್").containsMatchIn(l)) return h(torch(l))
         if (Regex("\\bbattery\\b|बैटरी|ಬ್ಯಾಟರಿ").containsMatchIn(l)) return h(battery())
         if (Regex("\\balarm\\b|remind me|अलार्म|ಅಲಾರಂ").containsMatchIn(l)) return h(alarm(l))
         if (Regex("\\bvolume\\b|\\bmute\\b|ವಾಲ್ಯೂಮ್|वॉल्यूम|आवाज़").containsMatchIn(l)) return h(volume(l))
-        if (Regex("\\btime\\b|समय|कितने बजे|ಸಮಯ").containsMatchIn(l))
-            return h("It's " + SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date()) + ".")
-        if (Regex("\\bdate\\b|what day|तारीख|ದಿನಾಂಕ").containsMatchIn(l))
-            return h("Today is " + SimpleDateFormat("EEEE, d MMMM yyyy", Locale.getDefault()).format(Date()) + ".")
+        when (val timeRes = WorldTimeEngine.resolveQuery(text, store.use24HourClock)) {
+            is TimeQueryResult.Handled -> return h(timeRes.reply)
+            TimeQueryResult.NotATimeQuery -> {}
+        }
         if (Regex("internet|network|wi-?fi|connectivity|इंटरनेट|ಇಂಟರ್ನೆಟ್").containsMatchIn(l)) return h(network())
 
         // ----- communication -----
@@ -186,6 +226,16 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
     }
 
     private fun torch(l: String): String {
+        val off = Regex("\\boff\\b|बंद|ऑफ|ಆಫ್").containsMatchIn(l)
+        val on = Regex("\\bon\\b|चालू|ऑन|ಆನ್").containsMatchIn(l)
+        val desired: Boolean? = when {
+            off -> false
+            on -> true
+            else -> null
+        }
+        if (deviceMonitor != null) {
+            return deviceMonitor.toggleFlashlight(desired)
+        }
         val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val id = try {
             cm.cameraIdList.firstOrNull {
@@ -194,13 +244,7 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
         } catch (e: Exception) {
             null
         } ?: return "This phone doesn't report a flashlight I can control."
-        val off = Regex("\\boff\\b|बंद|ऑफ|ಆಫ್").containsMatchIn(l)
-        val on = Regex("\\bon\\b|चालू|ऑन|ಆನ್").containsMatchIn(l)
-        val target = when {
-            off -> false
-            on -> true
-            else -> !torchOn
-        }
+        val target = desired ?: !torchOn
         return try {
             cm.setTorchMode(id, target)
             torchOn = target
@@ -211,6 +255,11 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
     }
 
     private fun battery(): String {
+        if (deviceMonitor != null) {
+            val s = deviceMonitor.refreshNow()
+            val temp = s.batteryTempC?.let { String.format(Locale.US, ", temperature %.1f°C", it) } ?: ""
+            return "Battery is at ${s.batteryPercent} percent (${s.batteryStatusLabel}, ${s.chargingSource}$temp, health ${s.batteryHealth})."
+        }
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val st = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -220,6 +269,10 @@ class CommandEngine(private val ctx: Context, private val store: Store) {
     }
 
     private fun network(): String {
+        if (deviceMonitor != null) {
+            val s = deviceMonitor.refreshNow()
+            return "Network is ${s.networkLabel}. Wi-Fi is ${s.wifiStatus}."
+        }
         val cm = ctx.getSystemService(ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
             ?: return "You're offline. No network connection."

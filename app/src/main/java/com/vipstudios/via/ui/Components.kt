@@ -7,6 +7,13 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -14,13 +21,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -29,11 +37,16 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -42,15 +55,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.LoadAdError
 import com.vipstudios.via.BuildConfig
 import com.vipstudios.via.ui.theme.ViaCyan
 import com.vipstudios.via.ui.theme.ViaGold
@@ -65,7 +80,30 @@ fun ViaBackground(content: @Composable BoxScope.() -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(bg, sf, bg))),
+            .background(Brush.verticalGradient(listOf(bg, sf, bg)))
+            .drawBehind {
+                // Subtle futuristic HUD radial core glow & precision horizon grid lines
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(ViaRoyal.copy(alpha = 0.16f), Color.Transparent),
+                        center = Offset(size.width * 0.5f, size.height * 0.36f),
+                        radius = size.minDimension * 0.75f
+                    ),
+                    center = Offset(size.width * 0.5f, size.height * 0.36f),
+                    radius = size.minDimension * 0.75f
+                )
+                val step = 48.dp.toPx()
+                var y = step
+                while (y < size.height) {
+                    drawLine(
+                        color = ViaCyan.copy(alpha = 0.035f),
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 1f
+                    )
+                    y += step
+                }
+            },
         content = content
     )
 }
@@ -75,13 +113,27 @@ fun ViaTopBar(title: String, onBack: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 6.dp),
+            .statusBarsPadding()
+            .padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.primary)
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("top_bar_back_button")
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = MaterialTheme.colorScheme.primary
+            )
         }
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }
 
@@ -90,7 +142,7 @@ fun GlowCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f),
         border = BorderStroke(1.dp, ViaGold.copy(alpha = 0.35f)),
         content = content
     )
@@ -102,11 +154,11 @@ fun Pill(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
         modifier
             .clip(RoundedCornerShape(50))
             .border(1.dp, ViaCyan.copy(alpha = 0.6f), RoundedCornerShape(50))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        Text(text, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+        Text(text, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -156,7 +208,7 @@ fun Waveform(level: Float, active: Boolean, modifier: Modifier = Modifier, bars:
         infiniteRepeatable(tween(1200, easing = LinearEasing)),
         label = "phase"
     )
-    Canvas(modifier.fillMaxWidth().height(48.dp)) {
+    Canvas(modifier.fillMaxWidth().height(42.dp)) {
         val w = size.width / (bars * 2f)
         for (i in 0 until bars) {
             val base = if (active) 0.15f + level * 0.85f else 0.08f
@@ -171,19 +223,74 @@ fun Waveform(level: Float, active: Boolean, modifier: Modifier = Modifier, bars:
     }
 }
 
-/** Google AdMob adaptive banner. TEST unit id comes from BuildConfig (see app/build.gradle.kts). */
+/** Responsive Google AdMob adaptive banner that collapses safely if loading fails. */
 @Composable
 fun AdaptiveBanner(modifier: Modifier = Modifier) {
-    val width = LocalConfiguration.current.screenWidthDp
-    AndroidView(
-        modifier = modifier.fillMaxWidth(),
-        factory = { ctx ->
-            AdView(ctx).apply {
-                setAdSize(AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, width))
-                adUnitId = BuildConfig.ADMOB_BANNER_UNIT_ID
-                loadAd(AdRequest.Builder().build())
+    var adFailed by remember { mutableStateOf(false) }
+    if (adFailed) return
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("admob_banner_container"),
+        contentAlignment = Alignment.Center
+    ) {
+        val adWidthDp = maxWidth.value.toInt().coerceAtLeast(320)
+        AndroidView(
+            modifier = Modifier.fillMaxWidth(),
+            factory = { ctx ->
+                AdView(ctx).apply {
+                    try {
+                        setAdSize(AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, adWidthDp))
+                        adUnitId = BuildConfig.ADMOB_BANNER_UNIT_ID
+                        adListener = object : AdListener() {
+                            override fun onAdFailedToLoad(error: LoadAdError) {
+                                Log.w("AdaptiveBanner", "Banner ad failed to load: ${error.message}")
+                                adFailed = true
+                            }
+                        }
+                        loadAd(AdRequest.Builder().build())
+                    } catch (t: Throwable) {
+                        Log.w("AdaptiveBanner", "Banner ad initialization error", t)
+                        adFailed = true
+                    }
+                }
+            },
+            onRelease = { view ->
+                try {
+                    view.destroy()
+                } catch (_: Throwable) {
+                }
             }
-        },
-        onRelease = { it.destroy() }
-    )
+        )
+    }
+}
+
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * Reusable launcher for Google Identity Services AuthorizationClient consent flow (read-only Sheets).
+ */
+@Composable
+fun rememberGoogleSheetsConnector(vm: ViaViewModel): () -> Unit {
+    val ctx = LocalContext.current
+    val activity = remember(ctx) { ctx.findActivity() }
+    val consentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (activity != null) {
+            vm.handleSheetsConsentResult(activity, result.resultCode, result.data)
+        }
+    }
+    return {
+        if (activity != null) {
+            vm.connectSheets(activity) { intentSender ->
+                consentLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+            }
+        }
+    }
 }

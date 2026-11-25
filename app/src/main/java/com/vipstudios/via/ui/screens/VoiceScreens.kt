@@ -39,8 +39,10 @@ fun VoiceScreen(vm: ViaViewModel, back: () -> Unit) {
     val ctx = LocalContext.current
     val state by vm.voice.state.collectAsState()
     val level by vm.voice.level.collectAsState()
+    val mouthLevel by vm.voice.mouthLevel.collectAsState()
     val partial by vm.voice.partial.collectAsState()
     val error by vm.voice.error.collectAsState()
+    val assistantState = vm.assistantState(state)
     var micDenied by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -64,31 +66,54 @@ fun VoiceScreen(vm: ViaViewModel, back: () -> Unit) {
         if (granted) vm.startListening() else launcher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    val status = when (state) {
-        VoiceState.Listening -> "Listening..."
-        VoiceState.Speaking -> "Speaking..."
-        VoiceState.Idle -> if (vm.thinking) "Thinking..." else "Tap the mic to talk"
+    val status = when (assistantState) {
+        AssistantState.LISTENING -> "Listening..."
+        AssistantState.THINKING -> "Thinking..."
+        AssistantState.SPEAKING -> "Speaking..."
+        AssistantState.IDLE -> "Tap the mic or avatar to talk"
     }
 
-    // No ads on this screen on purpose.
     ViaBackground {
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+        ) {
             ViaTopBar("Voice Assistant", back)
             Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                AiCore(Modifier.fillMaxWidth(0.7f), level = level, active = state != VoiceState.Idle)
-                Spacer(Modifier.height(8.dp))
-                Text(status, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ViaCyan)
-                Waveform(level = level, active = state == VoiceState.Listening, modifier = Modifier.padding(vertical = 8.dp))
-                if (partial.isNotBlank() && state == VoiceState.Listening)
+                InteractiveAnimeAvatar(
+                    state = assistantState,
+                    micLevel = level,
+                    mouthLevel = mouthLevel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(340.dp),
+                    onTapAvatar = { tapMic() }
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(status, style = MaterialTheme.typography.titleLarge, color = ViaCyan)
+                Waveform(
+                    level = if (state == VoiceState.Speaking) mouthLevel else level,
+                    active = state == VoiceState.Listening || state == VoiceState.Speaking,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+                if (partial.isNotBlank() && state == VoiceState.Listening) {
                     Text("\"$partial\"", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (vm.lastReply.isNotBlank()) {
+                }
+                if (vm.streamingReply.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    GlowCard(Modifier.fillMaxWidth()) { Text(vm.streamingReply, Modifier.padding(12.dp)) }
+                } else if (vm.lastReply.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
                     GlowCard(Modifier.fillMaxWidth()) { Text(vm.lastReply, Modifier.padding(12.dp)) }
                 }
-                error?.let {
+                (vm.aiError ?: error)?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center, fontSize = 14.sp)
                 }
@@ -100,7 +125,7 @@ fun VoiceScreen(vm: ViaViewModel, back: () -> Unit) {
                         textAlign = TextAlign.Center, fontSize = 13.sp, color = MaterialTheme.colorScheme.error
                     )
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     RoundBtn(Icons.Filled.Stop, "Stop speaking", 52.dp, state == VoiceState.Speaking) { vm.voice.stopSpeaking() }
                     RoundBtn(
@@ -109,15 +134,32 @@ fun VoiceScreen(vm: ViaViewModel, back: () -> Unit) {
                     ) { tapMic() }
                     RoundBtn(Icons.Filled.Replay, "Repeat answer", 52.dp, vm.lastReply.isNotBlank()) { vm.repeatLast() }
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = vm.continuous, onCheckedChange = { vm.setContinuous(it) })
                     Spacer(Modifier.width(8.dp))
                     Text("Continuous conversation", fontSize = 14.sp)
                 }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = { vm.testVoice() },
+                    enabled = !vm.voiceTesting
+                ) {
+                    Text(if (vm.voiceTesting) "Testing Voice..." else "Test Voice")
+                }
+                if (vm.voiceTestStatus.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        vm.voiceTestStatus,
+                        fontSize = 12.sp,
+                        color = ViaCyan,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    "Language: " + vm.voice.label(vm.language) + ". Change it in Settings.\n" +
-                        "VIA listens only while this screen is open and the mic is active.",
+                    "Language: " + vm.voice.label(vm.language) + ". Say \"Hey VIA\" + your question.\n" +
+                        "VIA listens only while the mic is active.",
                     fontSize = 12.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -155,6 +197,8 @@ fun CommandsScreen(vm: ViaViewModel, back: () -> Unit) {
         "Phone info" to listOf(
             Cmd("Battery", "battery", "battery"),
             Cmd("Time", "what time is it", "what time is it"),
+            Cmd("India time", "what time is it in India?", "what time is it in India?"),
+            Cmd("World time", "Show India and London time", "Show India and London time"),
             Cmd("Date", "what is the date", "what is the date"),
             Cmd("Connection", "check internet", "check internet")
         ),
@@ -213,12 +257,13 @@ fun CommandsScreen(vm: ViaViewModel, back: () -> Unit) {
                     }
                 }
                 item {
-                    Text("Not supported yet", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 14.dp))
+                    Text("Notes & privacy", fontWeight = FontWeight.Bold, color = ViaGold, modifier = Modifier.padding(top = 14.dp))
                     Text(
-                        "Contact names (needs contacts permission), reading PDFs and documents, " +
-                            "internet-sourced answers, translation and maths (need the Stage 2 backend), " +
-                            "and the \"Hey VIA\" wake word. Messages and calls are never sent automatically.",
-                        fontSize = 13.sp
+                        "Messages and calls are never sent automatically—VIA only prepares them for you to confirm. " +
+                            "General questions, translations, and spreadsheet Q&A use Gemini AI, while background " +
+                            "\"Hey VIA\" listening can be toggled anytime in Settings.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(16.dp))
                 }
