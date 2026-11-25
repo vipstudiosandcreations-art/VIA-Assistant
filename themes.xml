@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.VIA" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/via_black</item>
+        <item name="android:statusBarColor">@color/via_black</item>
+        <item name="android:navigationBarColor">@color/via_black</item>
+    </style>
+</resources>
