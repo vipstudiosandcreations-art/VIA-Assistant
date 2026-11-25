@@ -33,12 +33,15 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
     var commandLog by mutableStateOf(store.commandLog())
 
     var language by mutableStateOf(store.language)
+        private set
     var themeMode by mutableStateOf(store.themeMode)
     var personality by mutableStateOf(store.personality)
+        private set
     var backendUrl by mutableStateOf(store.backendUrl)
     var apiToken by mutableStateOf(store.apiToken)
     var adsEnabled by mutableStateOf(store.adsEnabled)
     var continuous by mutableStateOf(store.continuous)
+        private set
 
     var thinking by mutableStateOf(false)
     var lastReply by mutableStateOf("")
@@ -162,14 +165,17 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- settings ----------
+    @JvmName("applyLanguage")
     fun setLanguage(v: String) { language = v; store.language = v }
     fun setTheme(v: String) { themeMode = v; store.themeMode = v }
+    @JvmName("applyPersonality")
     fun setPersonality(v: String) { personality = v; store.personality = v }
     fun setBackend(url: String, token: String) {
         backendUrl = url.trim(); apiToken = token.trim()
         store.backendUrl = backendUrl; store.apiToken = apiToken
     }
     fun setAds(v: Boolean) { adsEnabled = v; store.adsEnabled = v }
+    @JvmName("applyContinuous")
     fun setContinuous(v: Boolean) { continuous = v; store.continuous = v }
 
     fun testConnection() {

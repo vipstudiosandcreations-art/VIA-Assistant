@@ -1,0 +1,6 @@
+{
+  "name": "VIA",
+  "description": "VIP Intelligent Assistant by VIP Studios & Creations - AI chat, voice assistant, phone commands, memory, and multilingual support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
