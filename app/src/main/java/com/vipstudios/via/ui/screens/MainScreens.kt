@@ -57,8 +57,8 @@ import kotlinx.coroutines.delay
 fun SplashScreen(onDone: () -> Unit) {
     val fade = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        fade.animateTo(1f, tween(800))
-        delay(1000)
+        fade.animateTo(1f, tween(300))
+        delay(250)
         onDone()
     }
     ViaBackground {
@@ -72,10 +72,13 @@ fun SplashScreen(onDone: () -> Unit) {
         ) {
             Image(
                 painterResource(R.drawable.via_logo),
-                contentDescription = "VIA Golden Crowned Lion Logo",
+                contentDescription = "VIA AI Crowned Lion Logo",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth(0.76f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(22.dp))
+                    .border(1.dp, ViaGold.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
                     .alpha(fade.value)
             )
             Spacer(Modifier.height(16.dp))
@@ -110,6 +113,7 @@ fun DashboardScreen(vm: ViaViewModel, go: (String) -> Unit) {
 
     val assistantState = vm.assistantState(voiceState)
     val callState by vm.callState.collectAsState()
+    val phoneStatus by vm.phoneStatus.collectAsState()
     val connectSheets = rememberGoogleSheetsConnector(vm)
     var input by remember { mutableStateOf("") }
     var micDenied by remember { mutableStateOf(false) }
@@ -146,9 +150,9 @@ fun DashboardScreen(vm: ViaViewModel, go: (String) -> Unit) {
 
     val quickActions = listOf(
         "Hey VIA" to "Hey VIA",
-        "Battery" to "battery",
+        "Battery Status" to "battery status",
         "Time" to "what time is it",
-        "YouTube" to "open youtube",
+        "Open Camera" to "open camera",
         "Tasks" to "show my tasks"
     )
 
@@ -166,6 +170,7 @@ fun DashboardScreen(vm: ViaViewModel, go: (String) -> Unit) {
                 voiceResponseOn = vm.voiceResponseEnabled,
                 wakeMicActive = vm.wakeMicActive,
                 wakeServiceOn = vm.wakeServiceOn,
+                isOffline = !phoneStatus.isOnline,
                 onToggleVoiceResponse = { vm.toggleVoiceResponse() },
                 onStopAssistant = { vm.stopBackgroundAssistant() },
                 onNavigate = go
@@ -368,6 +373,7 @@ private fun HudHeader(
     voiceResponseOn: Boolean,
     wakeMicActive: Boolean,
     wakeServiceOn: Boolean,
+    isOffline: Boolean,
     onToggleVoiceResponse: () -> Unit,
     onStopAssistant: () -> Unit,
     onNavigate: (String) -> Unit
@@ -397,6 +403,23 @@ private fun HudHeader(
                 )
                 Spacer(Modifier.width(8.dp))
                 StateBadge(state)
+                if (isOffline) {
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = ViaGold.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, ViaGold.copy(alpha = 0.7f)),
+                        modifier = Modifier.testTag("offline_mode_badge")
+                    ) {
+                        Text(
+                            text = "OFFLINE",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ViaGold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 if (wakeMicActive || state == AssistantState.LISTENING) {
                     Spacer(Modifier.width(6.dp))
                     Surface(
@@ -855,6 +878,7 @@ fun ChatScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val voiceState by vm.voice.state.collectAsState()
+    val phoneStatus by vm.phoneStatus.collectAsState()
     val assistantState = vm.assistantState(voiceState)
 
     LaunchedEffect(vm.messages.size, vm.streamingReply, vm.thinking) {
@@ -885,6 +909,25 @@ fun ChatScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                         if (vm.voiceResponseEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         contentDescription = "Toggle voice response",
                         tint = if (vm.voiceResponseEnabled) ViaGold else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (!phoneStatus.isOnline) {
+                Surface(
+                    color = ViaGold.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, ViaGold.copy(alpha = 0.55f)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .testTag("chat_offline_banner")
+                ) {
+                    Text(
+                        text = "Offline mode — local commands (Open Camera, Battery Status, Time, Flashlight, Tasks) work without Gemini AI.",
+                        color = ViaGold,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
             }

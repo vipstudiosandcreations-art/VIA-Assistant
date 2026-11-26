@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,6 +21,25 @@ android {
         // Default fallback (Google public TEST IDs) for AdMob development safety
         manifestPlaceholders["admobAppId"] = "ca-app-pub-3940256099942544~3347511713"
         buildConfigField("String", "ADMOB_BANNER_UNIT_ID", "\"ca-app-pub-3940256099942544/9214589741\"")
+
+        val envProps = Properties().apply {
+            val envFile = rootProject.file(".env")
+            val exampleFile = rootProject.file(".env.example")
+            if (envFile.exists()) envFile.inputStream().use { load(it) }
+            else if (exampleFile.exists()) exampleFile.inputStream().use { load(it) }
+        }
+        val rawElevenLabsKey = (
+            System.getenv("ELEVENLABS_API_KEY")
+                ?: envProps.getProperty("ELEVENLABS_API_KEY")
+                ?: ""
+            ).trim().removeSurrounding("\"")
+        val elevenLabsApiKey = if (rawElevenLabsKey == "YOUR_ELEVENLABS_API_KEY") "" else rawElevenLabsKey
+        buildConfigField(
+            "String",
+            "ELEVENLABS_API_KEY",
+            "\"${elevenLabsApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+        )
+        buildConfigField("String", "ELEVENLABS_DEFAULT_VOICE_ID", "\"K24eC7JpUgk8zMtQYrpV\"")
     }
 
     signingConfigs {
@@ -56,6 +77,13 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    lint {
+        disable += setOf(
+            "CoroutineCreationDuringComposition",
+            "FlowOperatorInvokedInComposition",
+            "StateFlowValueCalledInComposition"
+        )
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

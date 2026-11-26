@@ -16,7 +16,7 @@ class ViaRuntime private constructor(context: Context) {
     private val appCtx = context.applicationContext
 
     val store = Store(appCtx)
-    val deviceMonitor = DeviceStatusMonitor(appCtx)
+    val deviceMonitor = DeviceStatusMonitor(appCtx, store)
     val callManager = CallControlManager(appCtx)
     val aiRepo = ViaAiRepository()
     val sheetsRepo = GoogleSheetsRepository()

@@ -15,6 +15,7 @@ import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
+import com.vipstudios.via.BuildConfig
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -137,7 +138,8 @@ class CallControlManager(context: Context) {
             refreshPermissions()
             true
         } catch (e: SecurityException) {
-            Log.w(TAG, "SecurityException starting call monitor", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "SecurityException starting call monitor", e)
+            else Log.w(TAG, "SecurityException starting call monitor")
             registered = false
             state.value = state.value.copy(
                 monitoringActive = false,
@@ -145,7 +147,8 @@ class CallControlManager(context: Context) {
             )
             false
         } catch (e: Exception) {
-            Log.w(TAG, "Unable to start call monitor", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "Unable to start call monitor", e)
+            else Log.w(TAG, "Unable to start call monitor: ${e.javaClass.simpleName}")
             false
         }
     }
@@ -241,14 +244,16 @@ class CallControlManager(context: Context) {
             telecom.acceptRingingCall()
             CallActionResult(true, "Answering the incoming call.")
         } catch (e: SecurityException) {
-            Log.w(TAG, "Android denied acceptRingingCall", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "Android denied acceptRingingCall", e)
+            else Log.w(TAG, "Android denied acceptRingingCall")
             CallActionResult(
                 succeeded = false,
                 message = "This Android device restricts answering calls unless VIA is set as the Default Phone app. Opening Phone settings/dialer.",
                 offerSystemAction = true
             )
         } catch (e: Exception) {
-            Log.w(TAG, "acceptRingingCall failed", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "acceptRingingCall failed", e)
+            else Log.w(TAG, "acceptRingingCall failed: ${e.javaClass.simpleName}")
             CallActionResult(
                 succeeded = false,
                 message = "Could not answer the call automatically (${e.message ?: "unsupported"}). Please use your phone's call screen.",
@@ -288,14 +293,16 @@ class CallControlManager(context: Context) {
                 )
             }
         } catch (e: SecurityException) {
-            Log.w(TAG, "Android denied endCall", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "Android denied endCall", e)
+            else Log.w(TAG, "Android denied endCall")
             CallActionResult(
                 succeeded = false,
                 message = "This Android device restricts declining calls unless VIA holds the Default Phone role.",
                 offerSystemAction = true
             )
         } catch (e: Exception) {
-            Log.w(TAG, "endCall failed", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "endCall failed", e)
+            else Log.w(TAG, "endCall failed: ${e.javaClass.simpleName}")
             CallActionResult(false, "Could not decline the call automatically.", offerSystemAction = true)
         }
     }

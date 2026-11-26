@@ -12,6 +12,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -23,6 +25,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.vipstudios.via.BuildConfig
 import com.vipstudios.via.MainActivity
 import com.vipstudios.via.R
 import com.vipstudios.via.ai.AiStreamEvent
@@ -71,7 +74,7 @@ class LocalWakeWordEngine(
     private var recognizer: SpeechRecognizer? = null
     private var active = false
     private var wakeCallback: ((String?) -> Unit)? = null
-    private var restartDelayMs = 600L
+    private var restartDelayMs = 300L
     private var fallbackToEnglish = false
 
     override val isSupported: Boolean
@@ -92,7 +95,7 @@ class LocalWakeWordEngine(
             }
             if (active) return@post
             active = true
-            restartDelayMs = 600L
+            restartDelayMs = 300L
             fallbackToEnglish = false
             beginListeningPass()
         }
@@ -141,7 +144,7 @@ class LocalWakeWordEngine(
                 override fun onResults(results: Bundle?) {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
                     if (!checkMatches(matches, isFinal = true) && active) {
-                        scheduleNextPass(500L)
+                        scheduleNextPass(200L)
                     }
                 }
 
@@ -163,7 +166,7 @@ class LocalWakeWordEngine(
                             scheduleNextPass(1200L)
                         }
                         else -> {
-                            restartDelayMs = 700L
+                            restartDelayMs = 300L
                             scheduleNextPass(restartDelayMs)
                         }
                     }
@@ -184,10 +187,16 @@ class LocalWakeWordEngine(
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 500L)
             }
             sr.startListening(intent)
         } catch (e: Exception) {
-            Log.w(TAG, "On-device wake-word pass failed", e)
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "On-device wake-word pass failed", e)
+            } else {
+                Log.w(TAG, "On-device wake-word pass failed: ${e.javaClass.simpleName}")
+            }
             onStateChanged(false, "Local wake word paused: ${e.message ?: "device restriction"}")
             scheduleNextPass(2500L)
         }
@@ -344,15 +353,18 @@ class WakeWordService : Service() {
             }
             true
         } catch (e: SecurityException) {
-            Log.w(TAG, "Android restricted starting microphone FGS from background", e)
+            Log.w(TAG, "Android restricted starting microphone FGS from background: ${e.javaClass.simpleName}")
             statusMessage.value = "Android restricted microphone start in background. Open VIA Settings to allow Background Assistant."
             false
         } catch (e: Exception) {
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "Unable to start foreground service", e)
+            } else {
+                Log.w(TAG, "Unable to start foreground service: ${e.javaClass.simpleName}")
+            }
             if (Build.VERSION.SDK_INT >= 31 && e is ForegroundServiceStartNotAllowedException) {
-                Log.w(TAG, "ForegroundServiceStartNotAllowedException", e)
                 statusMessage.value = "Android battery/background policy paused Background Assistant. Set VIA battery usage to Unrestricted in Android Settings."
             } else {
-                Log.w(TAG, "Unable to start foreground service", e)
                 statusMessage.value = "Device restricted background service (${e.javaClass.simpleName})."
             }
             false
@@ -479,14 +491,35 @@ class WakeWordService : Service() {
                         "${cmd.reply} Open VIA to view it on screen."
                     }
                     CommandResult.NotACommand -> {
-                        replyLang = lang
-                        generateBackgroundAiReply(cleaned, lang)
+                        if (!isNetworkOnline()) {
+                            when (val off = runtime.commandEngine.executeOfflineFallback(cleaned, lang)) {
+                                is CommandResult.Handled -> {
+                                    replyLang = if (off.reply.any { it.code > 0x7F }) lang else "en"
+                                    store.addCommandLog(cleaned, off.reply)
+                                    off.reply
+                                }
+                                is CommandResult.Navigate -> {
+                                    store.addCommandLog(cleaned, off.reply)
+                                    "${off.reply} Open VIA to view it on screen."
+                                }
+                                CommandResult.NotACommand -> {
+                                    "You're currently offline. Try \"Battery Status\", \"Flashlight On\", or \"What time is it?\"."
+                                }
+                            }
+                        } else {
+                            replyLang = lang
+                            generateBackgroundAiReply(cleaned, lang)
+                        }
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Background query failed", e)
+                if (BuildConfig.DEBUG) {
+                    Log.e(TAG, "Background query failed", e)
+                } else {
+                    Log.e(TAG, "Background query failed: ${e.javaClass.simpleName}")
+                }
                 replyLang = "en"
                 e.localizedMessage ?: "Sorry, I couldn't complete that request right now."
             }
@@ -524,7 +557,7 @@ class WakeWordService : Service() {
         var sheetsKnowledge: String? = null
         var sheetsStatusNote: String? = null
         if (store.sheetsEnabled) {
-            when (val res = runtime.sheetsRepo.fetchLatest(applicationContext)) {
+            when (val res = runtime.sheetsRepo.fetchLatestOrCached(applicationContext)) {
                 is SheetsFetchOutcome.Success -> sheetsKnowledge = res.snapshot.toKnowledgeText()
                 SheetsFetchOutcome.NeedsReauth -> {
                     sheetsStatusNote = "Google Sheets authorization needs to be refreshed inside VIA."
@@ -543,13 +576,24 @@ class WakeWordService : Service() {
             history = history,
             memory = store.memory(),
             sheetsKnowledge = sheetsKnowledge,
-            sheetsStatusNote = sheetsStatusNote
+            sheetsStatusNote = sheetsStatusNote,
+            preferFast = true
         ).collect { ev ->
             if (ev is AiStreamEvent.Completed) {
                 completed = ev.fullText
             }
         }
         return completed.ifBlank { "I didn't receive a response. Please try again." }
+    }
+
+    private fun isNetworkOnline(): Boolean {
+        return try {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return false
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun resumeWaitingLoop(note: String) {

@@ -8,8 +8,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -245,13 +247,17 @@ fun AdaptiveBanner(modifier: Modifier = Modifier) {
                         adUnitId = BuildConfig.ADMOB_BANNER_UNIT_ID
                         adListener = object : AdListener() {
                             override fun onAdFailedToLoad(error: LoadAdError) {
-                                Log.w("AdaptiveBanner", "Banner ad failed to load: ${error.message}")
+                                if (BuildConfig.DEBUG) {
+                                    Log.w("AdaptiveBanner", "Banner ad failed to load (code=${error.code})")
+                                }
                                 adFailed = true
                             }
                         }
                         loadAd(AdRequest.Builder().build())
                     } catch (t: Throwable) {
-                        Log.w("AdaptiveBanner", "Banner ad initialization error", t)
+                        if (BuildConfig.DEBUG) {
+                            Log.w("AdaptiveBanner", "Banner ad initialization error: ${t.javaClass.simpleName}")
+                        }
                         adFailed = true
                     }
                 }
@@ -270,6 +276,22 @@ tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+fun Context.safeStartActivity(intent: Intent): Boolean {
+    if (findActivity() == null) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return try {
+        startActivity(intent)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
+    } catch (_: Exception) {
+        false
+    }
 }
 
 /**

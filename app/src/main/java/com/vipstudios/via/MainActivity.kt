@@ -26,6 +26,7 @@ import com.vipstudios.via.ui.screens.AboutScreen
 import com.vipstudios.via.ui.screens.CameraScreen
 import com.vipstudios.via.ui.screens.ChatScreen
 import com.vipstudios.via.ui.screens.CommandsScreen
+import com.vipstudios.via.ui.screens.CustomCommandsScreen
 import com.vipstudios.via.ui.screens.DashboardScreen
 import com.vipstudios.via.ui.screens.DeviceControlsScreen
 import com.vipstudios.via.ui.screens.HistoryScreen
@@ -93,6 +94,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.hasExtra("FIREBASE_APPCHECK_DEBUG_TOKEN")) {
+            configureAppCheck(this, intent)
+        }
         setIntent(intent)
         pendingIntentState = intent
     }
@@ -127,7 +131,8 @@ fun ViaNav(vm: ViaViewModel, skipSplash: Boolean = false) {
         composable("dashboard") { DashboardScreen(vm, go) }
         composable("chat") { ChatScreen(vm, go, back) }
         composable("voice") { VoiceScreen(vm, back) }
-        composable("commands") { CommandsScreen(vm, back) }
+        composable("commands") { CommandsScreen(vm, go, back) }
+        composable("custom_commands") { CustomCommandsScreen(vm, back) }
         composable("controls") { DeviceControlsScreen(vm, go, back) }
         composable("camera") { CameraScreen(back) }
         composable("history") { HistoryScreen(vm, back) }

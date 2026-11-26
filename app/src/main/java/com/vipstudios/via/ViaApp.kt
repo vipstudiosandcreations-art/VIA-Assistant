@@ -12,10 +12,14 @@ class ViaApp : Application() {
         // Safely initialize Google Mobile Ads SDK without risking startup crashes.
         try {
             MobileAds.initialize(this) { status ->
-                Log.d(TAG, "MobileAds initialized: ${status.adapterStatusMap.keys}")
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "MobileAds initialized: ${status.adapterStatusMap.keys}")
+                }
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "MobileAds initialization skipped safely", t)
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "MobileAds initialization skipped safely: ${t.javaClass.simpleName}")
+            }
         }
     }
 }

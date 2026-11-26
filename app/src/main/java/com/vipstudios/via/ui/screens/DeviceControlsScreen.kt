@@ -31,6 +31,7 @@ import com.vipstudios.via.ui.GlowCard
 import com.vipstudios.via.ui.ViaBackground
 import com.vipstudios.via.ui.ViaTopBar
 import com.vipstudios.via.ui.ViaViewModel
+import com.vipstudios.via.ui.safeStartActivity
 import com.vipstudios.via.ui.theme.ViaBlack
 import com.vipstudios.via.ui.theme.ViaCyan
 import com.vipstudios.via.ui.theme.ViaGold
@@ -272,10 +273,10 @@ fun DeviceControlsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Uni
                             OutlinedButton(
                                 onClick = {
                                     val action = if (Build.VERSION.SDK_INT >= 29) Settings.Panel.ACTION_WIFI else Settings.ACTION_WIFI_SETTINGS
-                                    try {
-                                        ctx.startActivity(Intent(action))
-                                    } catch (_: Exception) {
-                                        ctx.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                                    val opened = ctx.safeStartActivity(Intent(action)) ||
+                                        ctx.safeStartActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                                    if (!opened) {
+                                        permissionNote = "Wi-Fi settings screen is unavailable on this device."
                                     }
                                 },
                                 modifier = Modifier.testTag("open_wifi_settings_button")
@@ -304,7 +305,11 @@ fun DeviceControlsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Uni
                     ) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
-                                onClick = { ctx.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) },
+                                onClick = {
+                                    if (!ctx.safeStartActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))) {
+                                        permissionNote = "Bluetooth settings screen is unavailable on this device."
+                                    }
+                                },
                                 modifier = Modifier.testTag("open_bluetooth_settings_button")
                             ) {
                                 Text("Bluetooth Settings")
@@ -379,13 +384,21 @@ fun DeviceControlsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Uni
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(
-                                    onClick = { ctx.startActivity(Intent(Intent.ACTION_DIAL)) },
+                                    onClick = {
+                                        if (!ctx.safeStartActivity(Intent(Intent.ACTION_DIAL))) {
+                                            permissionNote = "Phone dialer app is unavailable on this device."
+                                        }
+                                    },
                                     modifier = Modifier.testTag("open_dialer_button")
                                 ) {
                                     Text("Open Phone")
                                 }
                                 OutlinedButton(
-                                    onClick = { ctx.startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) },
+                                    onClick = {
+                                        if (!ctx.safeStartActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))) {
+                                            permissionNote = "Default Apps settings screen is unavailable on this device."
+                                        }
+                                    },
                                     modifier = Modifier.testTag("default_apps_button")
                                 ) {
                                     Text("Default Apps")
@@ -430,11 +443,10 @@ fun DeviceControlsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Uni
                                         putExtra(AlarmClock.EXTRA_MINUTES, min)
                                         putExtra(AlarmClock.EXTRA_MESSAGE, alarmLabel.ifBlank { "VIA Alarm" })
                                     }
-                                    try {
-                                        ctx.startActivity(i)
-                                        permissionNote = "Opened Clock app for $hr:${String.format(Locale.US, "%02d", min)}."
-                                    } catch (_: Exception) {
-                                        permissionNote = "No Clock app found to set alarms."
+                                    permissionNote = if (ctx.safeStartActivity(i)) {
+                                        "Opened Clock app for $hr:${String.format(Locale.US, "%02d", min)}."
+                                    } else {
+                                        "No Clock app found to set alarms."
                                     }
                                 },
                                 modifier = Modifier.testTag("set_alarm_control_button")
@@ -461,7 +473,11 @@ fun DeviceControlsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Uni
                                 Text("World Clock")
                             }
                             OutlinedButton(
-                                onClick = { ctx.startActivity(Intent(Settings.ACTION_DATE_SETTINGS)) },
+                                onClick = {
+                                    if (!ctx.safeStartActivity(Intent(Settings.ACTION_DATE_SETTINGS))) {
+                                        permissionNote = "System date/time settings screen is unavailable on this device."
+                                    }
+                                },
                                 modifier = Modifier.testTag("open_date_settings_button")
                             ) {
                                 Text("System Date/Time")

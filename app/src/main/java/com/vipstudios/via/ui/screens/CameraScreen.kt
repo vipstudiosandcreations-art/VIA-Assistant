@@ -45,6 +45,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.vipstudios.via.ui.GlowCard
 import com.vipstudios.via.ui.ViaBackground
 import com.vipstudios.via.ui.ViaTopBar
+import com.vipstudios.via.ui.safeStartActivity
 import com.vipstudios.via.ui.theme.ViaBlack
 import com.vipstudios.via.ui.theme.ViaCyan
 import com.vipstudios.via.ui.theme.ViaGold
@@ -175,11 +176,14 @@ fun CameraScreen(back: () -> Unit) {
                                 )
                                 TextButton(
                                     onClick = {
-                                        ctx.startActivity(
+                                        val opened = ctx.safeStartActivity(
                                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                                 data = Uri.fromParts("package", ctx.packageName, null)
                                             }
                                         )
+                                        if (!opened) {
+                                            statusBanner = "App Settings screen is unavailable on this device."
+                                        }
                                     }
                                 ) {
                                     Text("Open App Settings")

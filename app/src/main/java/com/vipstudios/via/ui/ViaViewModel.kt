@@ -11,11 +11,13 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.vipstudios.via.BuildConfig
 import com.vipstudios.via.MainActivity
 import com.vipstudios.via.ai.AiStreamEvent
 import com.vipstudios.via.ai.CloudClient
@@ -47,7 +49,7 @@ enum class AssistantState {
 }
 
 class ViaViewModel(app: Application) : AndroidViewModel(app) {
-    private val ctx: Context = app
+    private val ctx: Application = app
     private val runtime = ViaRuntime.get(app)
     private val store: Store = runtime.store
     private val deviceMonitor = runtime.deviceMonitor
@@ -63,6 +65,8 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var commandLog by mutableStateOf(store.commandLog())
         private set
+    var customCommands by mutableStateOf(store.customCommands())
+        private set
 
     var language by mutableStateOf(store.language)
         private set
@@ -75,6 +79,10 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
     var continuous by mutableStateOf(store.continuous)
         private set
     var voiceResponseEnabled by mutableStateOf(store.voiceResponseEnabled)
+        private set
+    var voiceId by mutableStateOf(store.voiceId)
+        private set
+    var neuralVoiceEnabled by mutableStateOf(store.neuralVoiceEnabled)
         private set
 
     var thinking by mutableStateOf(false)
@@ -100,7 +108,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var sheetsTitle by mutableStateOf("")
         private set
-    var sheetsRowCount by mutableStateOf(0)
+    var sheetsRowCount by mutableIntStateOf(0)
         private set
     var sheetsLastSyncText by mutableStateOf("")
         private set
@@ -123,6 +131,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
 
     // Device controls, battery alerts, and incoming call state
     val phoneStatus = deviceMonitor.status
+    val batteryHistory = deviceMonitor.batteryHistory
     val callState = callManager.state
     var batteryVoiceAlertsEnabled by mutableStateOf(store.batteryVoiceAlertsEnabled)
         private set
@@ -211,7 +220,11 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         try {
             ContextCompat.startForegroundService(ctx, intent)
         } catch (e: Exception) {
-            Log.w(TAG, "Could not start background assistant service", e)
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "Could not start background assistant service", e)
+            } else {
+                Log.w(TAG, "Could not start background assistant service: ${e.javaClass.simpleName}")
+            }
             wakeStatusText = "Could not start background service on this device."
         }
     }
@@ -305,7 +318,9 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
 
         val now = System.currentTimeMillis()
         if (fromVoice && raw.equals(lastVoiceSubmissionText, ignoreCase = true) && (now - lastVoiceSubmissionAtMs) < 2500L) {
-            Log.d(TAG, "Ignored duplicate voice submission")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Ignored duplicate voice submission")
+            }
             return
         }
         if (fromVoice) {
@@ -340,7 +355,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
-                val reply = process(query)
+                val reply = process(query, fromVoice = fromVoice)
                 if (reply != null) {
                     addMessage(false, reply)
                     lastReply = reply
@@ -360,7 +375,11 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
                 streamingReply = ""
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling user message", e)
+                if (BuildConfig.DEBUG) {
+                    Log.e(TAG, "Error handling user message", e)
+                } else {
+                    Log.e(TAG, "Error handling user message: ${e.javaClass.simpleName}")
+                }
                 val errMsg = e.localizedMessage ?: "Failed to generate a response."
                 aiError = errMsg
                 lastReplyLang = "en"
@@ -373,7 +392,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun process(query: String): String? {
+    private suspend fun process(query: String, fromVoice: Boolean = false): String? {
         when (val r = engine.execute(query, language)) {
             is CommandResult.Handled -> {
                 lastReplyLang = "en"
@@ -389,6 +408,25 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
                 return r.reply
             }
             CommandResult.NotACommand -> {}
+        }
+
+        if (!isOnline()) {
+            return when (val offlineRes = engine.executeOfflineFallback(query, language)) {
+                is CommandResult.Navigate -> {
+                    lastReplyLang = "en"
+                    store.addCommandLog(query, offlineRes.reply)
+                    refresh()
+                    pendingNavigationRoute = offlineRes.route
+                    offlineRes.reply
+                }
+                is CommandResult.Handled -> {
+                    lastReplyLang = if (offlineRes.reply.any { it.code > 0x7F }) language else "en"
+                    store.addCommandLog(query, offlineRes.reply)
+                    refresh()
+                    offlineRes.reply
+                }
+                CommandResult.NotACommand -> null
+            }
         }
 
         lastReplyLang = language
@@ -410,7 +448,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         var sheetsKnowledge: String? = null
         var sheetsStatusNote: String? = null
         if (store.sheetsEnabled) {
-            when (val res = sheetsRepo.fetchLatest(ctx)) {
+            when (val res = sheetsRepo.fetchLatestOrCached(ctx)) {
                 is SheetsFetchOutcome.Success -> {
                     applySnapshotState(res.snapshot)
                     sheetsKnowledge = res.snapshot.toKnowledgeText()
@@ -437,7 +475,8 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
             history = messages.dropLast(1),
             memory = memory,
             sheetsKnowledge = sheetsKnowledge,
-            sheetsStatusNote = sheetsStatusNote
+            sheetsStatusNote = sheetsStatusNote,
+            preferFast = fromVoice
         ).collect { event ->
             when (event) {
                 is AiStreamEvent.Chunk -> streamingReply = event.accumulatedText
@@ -543,6 +582,7 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
     private fun refresh() {
         memory = store.memory()
         commandLog = store.commandLog()
+        customCommands = store.customCommands()
     }
 
     // ---------- voice ----------
@@ -591,6 +631,23 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         if (!next) voice.stopSpeaking()
     }
 
+    @JvmName("applyVoiceId")
+    fun setVoiceId(id: String) {
+        val clean = id.trim().ifEmpty { Store.DEFAULT_VOICE_ID }
+        voiceId = clean
+        store.voiceId = clean
+    }
+
+    fun resetDefaultVoiceId() {
+        setVoiceId(Store.DEFAULT_VOICE_ID)
+    }
+
+    @JvmName("applyNeuralVoiceEnabled")
+    fun setNeuralVoiceEnabled(enabled: Boolean) {
+        neuralVoiceEnabled = enabled
+        store.neuralVoiceEnabled = enabled
+    }
+
     // ---------- diagnostics ----------
     fun testGemini() {
         if (geminiTesting) return
@@ -609,7 +666,11 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "testGemini failed", e)
+                if (BuildConfig.DEBUG) {
+                    Log.e(TAG, "testGemini failed", e)
+                } else {
+                    Log.e(TAG, "testGemini failed: ${e.javaClass.simpleName}")
+                }
                 geminiTestStatus = "Gemini failed: ${e.localizedMessage ?: "Unknown error"}"
             } finally {
                 geminiTesting = false
@@ -626,11 +687,15 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
         val langOk = voice.isTtsLanguageAvailable(language)
         val langLabel = voice.label(language)
 
+        val neuralActive = voice.isNeuralVoiceActive()
         val summary = buildString {
             append("Mic permission: ${if (hasMic) "Granted" else "Not granted"} · ")
             append("STT: ${if (sttOk) "Ready" else "Unavailable"} · ")
             append("TTS: ${if (ttsOk) "Ready" else "Starting/Unavailable"} · ")
-            append("$langLabel voice: ${if (langOk) "Installed" else "Using fallback"}")
+            append(
+                if (neuralActive) "Neural Voice: $voiceId"
+                else "Voice profile: $voiceId (using $langLabel system TTS)"
+            )
         }
         voiceTestStatus = summary
 
@@ -661,6 +726,24 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteMemory(id: Long) {
         store.deleteMemory(id); refresh()
+    }
+
+    // ---------- custom voice command mappings ----------
+    fun addCustomCommand(phrase: String, actionId: String, actionArg: String = "") {
+        if (phrase.isBlank()) return
+        store.addCustomCommand(phrase, actionId, actionArg)
+        refresh()
+    }
+
+    fun updateCustomCommand(id: Long, phrase: String, actionId: String, actionArg: String = "") {
+        if (phrase.isBlank()) return
+        store.updateCustomCommand(id, phrase, actionId, actionArg)
+        refresh()
+    }
+
+    fun deleteCustomCommand(id: Long) {
+        store.deleteCustomCommand(id)
+        refresh()
     }
 
     // ---------- data controls ----------
@@ -714,9 +797,13 @@ class ViaViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun isOnline(): Boolean {
-        val cm = ctx.getSystemService(ConnectivityManager::class.java)
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return try {
+            val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return false
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun refreshServiceState() {

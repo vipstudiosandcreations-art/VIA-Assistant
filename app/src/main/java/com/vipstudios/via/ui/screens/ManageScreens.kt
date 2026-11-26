@@ -10,10 +10,14 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -23,6 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -105,12 +110,14 @@ fun MemoryScreen(vm: ViaViewModel, back: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
     val ctx = LocalContext.current
     var url by remember { mutableStateOf(vm.backendUrl) }
     var token by remember { mutableStateOf(vm.apiToken) }
     var persona by remember { mutableStateOf(vm.personality) }
+    var voiceIdInput by remember { mutableStateOf(vm.voiceId) }
     var confirmWipe by remember { mutableStateOf(false) }
     var serviceNote by remember { mutableStateOf("") }
     val connectSheets = rememberGoogleSheetsConnector(vm)
@@ -120,6 +127,12 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
     }
 
     val callState by vm.callState.collectAsState()
+    val phoneStatus by vm.phoneStatus.collectAsState()
+    val batteryHistory by vm.batteryHistory.collectAsState()
+
+    LaunchedEffect(Unit) {
+        vm.refreshDeviceStatus()
+    }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         val micGranted = res[Manifest.permission.RECORD_AUDIO] == true ||
@@ -235,6 +248,14 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                 }
                 Note("Verify Gemini AI connectivity and Voice (Microphone / STT / TTS) separately.")
 
+                Section("Battery status & consumption trends")
+                BatteryTrendChartCard(
+                    status = phoneStatus,
+                    history = batteryHistory,
+                    onRefresh = { vm.refreshDeviceStatus() }
+                )
+                Note("Updates automatically as battery percentage, temperature, or charging state changes.")
+
                 Section("Language (voice and AI replies)")
                 listOf("en" to "English", "kn" to "ಕನ್ನಡ (Kannada)", "hi" to "हिन्दी (Hindi)").forEach { (code, name) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -286,6 +307,15 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(
+                        checked = vm.neuralVoiceEnabled,
+                        onCheckedChange = { vm.setNeuralVoiceEnabled(it) },
+                        modifier = Modifier.testTag("neural_voice_switch")
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Neural AI Voice (${vm.voiceId})")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
                         checked = vm.batteryVoiceAlertsEnabled,
                         onCheckedChange = { vm.setBatteryVoiceAlerts(it) },
                         modifier = Modifier.testTag("battery_alerts_switch")
@@ -328,7 +358,9 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                 data = Uri.fromParts("package", ctx.packageName, null)
                             }
-                            ctx.startActivity(intent)
+                            if (!ctx.safeStartActivity(intent)) {
+                                serviceNote = "Unable to open Android App Settings on this device."
+                            }
                         },
                         modifier = Modifier.testTag("battery_settings_button")
                     ) {
@@ -338,6 +370,42 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                 Note(
                     "Uses an official Android Foreground Service with a persistent notification. When enabled, \"Hey VIA\" listens locally on-device " +
                         "without continuously uploading audio, answers via Gemini AI and Text-to-Speech even while minimized, and never bypasses force-stop or Android security rules."
+                )
+
+                Section("Voice profile (ElevenLabs TTS)")
+                OutlinedTextField(
+                    value = voiceIdInput,
+                    onValueChange = { voiceIdInput = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("voice_id_input"),
+                    label = { Text("Active ElevenLabs Voice ID") },
+                    singleLine = true
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            vm.setVoiceId(voiceIdInput)
+                            voiceIdInput = vm.voiceId
+                        },
+                        modifier = Modifier.testTag("save_voice_id_button")
+                    ) { Text("Save Voice ID") }
+                    TextButton(
+                        onClick = {
+                            vm.resetDefaultVoiceId()
+                            voiceIdInput = vm.voiceId
+                        },
+                        modifier = Modifier.testTag("reset_voice_id_button")
+                    ) { Text("Reset to K24eC7JpUgk8zMtQYrpV") }
+                }
+                Text(
+                    text = if (vm.voice.isNeuralVoiceConfigured()) {
+                        "ElevenLabs key active · Speaking with Voice ID ${vm.voiceId} (Multilingual v2)."
+                    } else {
+                        "Voice ID set to ${vm.voiceId}. Set ELEVENLABS_API_KEY in AI Studio Secrets for neural playback; using Android Text-to-Speech fallback meanwhile."
+                    },
+                    fontSize = 12.sp,
+                    color = if (vm.voice.isNeuralVoiceConfigured()) ViaCyan else ViaGold
                 )
 
                 Section("AI personality")
@@ -418,13 +486,24 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                 )
 
                 Section("Device controls & call safety")
-                OutlinedButton(
-                    onClick = { go("controls") },
-                    modifier = Modifier.testTag("settings_open_device_controls_button")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Open VIA Device Controls")
+                    OutlinedButton(
+                        onClick = { go("controls") },
+                        modifier = Modifier.testTag("settings_open_device_controls_button")
+                    ) {
+                        Text("Open VIA Device Controls")
+                    }
+                    OutlinedButton(
+                        onClick = { go("custom_commands") },
+                        modifier = Modifier.testTag("settings_custom_commands_button")
+                    ) {
+                        Text("Custom Commands (${vm.customCommands.size})")
+                    }
                 }
-                Note("Manage camera, flashlight, Wi-Fi, Bluetooth, phone status, alarms, and safe call actions. VIA never secretly records calls or audio.")
+                Note("Manage camera, flashlight, Wi-Fi, Bluetooth, phone status, alarms, custom voice phrases, and safe call actions. VIA never secretly records calls or audio.")
 
                 Section("App permissions")
                 val micGranted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -485,11 +564,14 @@ fun SettingsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 OutlinedButton(
                     onClick = {
-                        ctx.startActivity(
+                        val opened = ctx.safeStartActivity(
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                 data = Uri.fromParts("package", ctx.packageName, null)
                             }
                         )
+                        if (!opened) {
+                            serviceNote = "Unable to open Android App Settings on this device."
+                        }
                     },
                     modifier = Modifier.testTag("open_app_permissions_settings_button")
                 ) {
@@ -606,7 +688,11 @@ fun AboutScreen(back: () -> Unit) {
                 Image(
                     painter = painterResource(R.drawable.via_logo),
                     contentDescription = "VIA Logo",
-                    modifier = Modifier.fillMaxWidth(0.55f)
+                    modifier = Modifier
+                        .fillMaxWidth(0.55f)
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(1.dp, ViaGold.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
                 )
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -682,6 +768,7 @@ fun AboutScreen(back: () -> Unit) {
                         )
                         Text(
                             "• Google Gemini AI & Firebase AI Logic (Google LLC) — governed by Google & Firebase Terms of Service.\n" +
+                                "• ElevenLabs Text-to-Speech API (ElevenLabs Inc.) — optional neural voice synthesis (default Voice ID K24eC7JpUgk8zMtQYrpV).\n" +
                                 "• Android OS, Jetpack Compose, CameraX & Telecom APIs (Google LLC) — Apache License 2.0 / Android SDK License.\n" +
                                 "• Google AdMob (Mobile Ads SDK) & Google Sheets Read-Only API (Google LLC) — governed by Google Publisher and API Terms.\n" +
                                 "• OpenJarvis (github.com/open-jarvis/OpenJarvis) — optional self-hosted backend support, attributed under its open-source license.",

@@ -14,6 +14,8 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.provider.AlarmClock
 import android.provider.Settings
+import com.vipstudios.via.data.CustomActionType
+import com.vipstudios.via.data.CustomVoiceCommand
 import com.vipstudios.via.data.Store
 import com.vipstudios.via.device.CallControlManager
 import com.vipstudios.via.device.DeviceStatusMonitor
@@ -40,6 +42,7 @@ class CommandEngine(
     private val deviceMonitor: DeviceStatusMonitor? = null,
     private val callManager: CallControlManager? = null
 ) {
+    private val offlineProcessor = OfflineCommandProcessor(ctx, store, deviceMonitor, callManager)
     private var torchOn = false
 
     private fun h(s: String) = CommandResult.Handled(s)
@@ -48,6 +51,11 @@ class CommandEngine(
         val text = raw.trim()
         if (text.isEmpty()) return CommandResult.NotACommand
         val l = text.lowercase(Locale.ROOT)
+
+        // ----- user-defined custom voice command mappings -----
+        matchCustomCommand(l)?.let { custom ->
+            return executeCustomAction(custom)
+        }
 
         // ----- memory, notes, tasks -----
         Regex("^(?:please )?remember (?:that )?(.+)$").find(l)?.let {
@@ -85,15 +93,10 @@ class CommandEngine(
             )
         }
 
-        // ----- VIA screens & device navigation -----
-        if (Regex("\\b(open camera|take a photo|take a picture|capture photo|via camera)\\b|कैमरा|ಕ್ಯಾಮೆರಾ").containsMatchIn(l)) {
-            return CommandResult.Navigate("camera", "Opening VIA camera.")
-        }
-        if (Regex("\\b(open device controls|device controls|phone controls|show device controls)\\b").containsMatchIn(l)) {
-            return CommandResult.Navigate("controls", "Opening VIA Device Controls.")
-        }
-        if (Regex("\\b(open world clock|open clock|world clock)\\b").containsMatchIn(l)) {
-            return CommandResult.Navigate("clock", "Opening real-time world clock.")
+        // ----- direct offline-capable VIA device & status commands -----
+        when (val direct = offlineProcessor.processDirectDeviceQuery(text)) {
+            is CommandResult.Handled, is CommandResult.Navigate -> return direct
+            CommandResult.NotACommand -> {}
         }
 
         // ----- incoming call safe actions -----
@@ -172,6 +175,18 @@ class CommandEngine(
         return CommandResult.NotACommand
     }
 
+    /**
+     * Fallback processor invoked when network connectivity is unavailable so core system tasks
+     * and helpful local responses remain available without Gemini AI.
+     */
+    fun executeOfflineFallback(raw: String, lang: String): CommandResult {
+        when (val primary = execute(raw, lang)) {
+            is CommandResult.Handled, is CommandResult.Navigate -> return primary
+            CommandResult.NotACommand -> {}
+        }
+        return offlineProcessor.processOfflineFallback(raw, lang)
+    }
+
     // ================= helpers =================
 
     private fun start(intent: Intent): Boolean {
@@ -204,6 +219,12 @@ class CommandEngine(
             any("bluetooth") -> settings(Settings.ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings")
             any("display", "brightness") -> settings(Settings.ACTION_DISPLAY_SETTINGS, "Display settings")
             any("sound") -> settings(Settings.ACTION_SOUND_SETTINGS, "Sound settings")
+            any("gallery", "photos") -> {
+                val galleryIntent = Intent(Intent.ACTION_VIEW).apply { type = "image/*" }
+                val altIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY)
+                if (start(altIntent) || start(galleryIntent)) "Opening Gallery." else "I couldn't find a Gallery app on this phone."
+            }
+            any("phone", "dialer") -> if (start(Intent(Intent.ACTION_DIAL))) "Opening Phone dialer." else "I couldn't open the Phone dialer."
             any("settings", "सेटिंग", "ಸೆಟ್ಟಿಂಗ್") -> settings(Settings.ACTION_SETTINGS, "Settings")
             else -> openInstalled(t)
         }
@@ -349,6 +370,67 @@ class CommandEngine(
         if (!start(i)) return "WhatsApp doesn't seem to be installed."
         return if (phone != null) "WhatsApp is open with your message ready. Check it and tap Send yourself. I never send for you."
         else "WhatsApp is open. Choose a contact and tap Send yourself. I never send for you. (Contact names aren't supported yet. Say a number with country code to open a chat directly.)"
+    }
+
+    private fun matchCustomCommand(normalizedInput: String): CustomVoiceCommand? {
+        val cleanInput = normalizedInput.trim().trimEnd('.', '!', '?', ',', ';')
+        if (cleanInput.isEmpty()) return null
+        val customList = store.customCommands()
+        if (customList.isEmpty()) return null
+
+        // Exact phrase match first, then longest word-boundary phrase match
+        val exact = customList.firstOrNull {
+            it.phrase.lowercase(Locale.ROOT).trim().trimEnd('.', '!', '?') == cleanInput
+        }
+        if (exact != null) return exact
+
+        return customList
+            .sortedByDescending { it.phrase.length }
+            .firstOrNull { cmd ->
+                val p = cmd.phrase.lowercase(Locale.ROOT).trim().trimEnd('.', '!', '?')
+                p.isNotBlank() && Regex("\\b${Regex.escape(p)}\\b").containsMatchIn(cleanInput)
+            }
+    }
+
+    private fun executeCustomAction(cmd: CustomVoiceCommand): CommandResult {
+        return when (CustomActionType.fromId(cmd.actionId)) {
+            CustomActionType.OPEN_GALLERY -> {
+                val galleryIntent = Intent(Intent.ACTION_VIEW).apply { type = "image/*" }
+                val altIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY)
+                h(
+                    if (start(altIntent) || start(galleryIntent)) "Opening your Gallery."
+                    else "I couldn't find a Gallery app on this device."
+                )
+            }
+            CustomActionType.SEND_MESSAGE -> {
+                val arg = cmd.actionArg.trim()
+                val isPhone = arg.isNotBlank() && arg.all { it.isDigit() || it == '+' || it == ' ' || it == '-' }
+                val smsUri = if (isPhone) Uri.parse("smsto:${arg.filter { it.isDigit() || it == '+' }}") else Uri.parse("smsto:")
+                val smsIntent = Intent(Intent.ACTION_SENDTO, smsUri).apply {
+                    if (!isPhone && arg.isNotBlank()) putExtra("sms_body", arg)
+                }
+                h(
+                    if (start(smsIntent)) "Messages is open so you can review and tap Send yourself. VIA never sends messages automatically."
+                    else "I couldn't open a messaging app on this device."
+                )
+            }
+            CustomActionType.OPEN_CAMERA -> CommandResult.Navigate("camera", "Opening VIA camera.")
+            CustomActionType.OPEN_DEVICE_CONTROLS -> CommandResult.Navigate("controls", "Opening VIA Device Controls.")
+            CustomActionType.OPEN_WORLD_CLOCK -> CommandResult.Navigate("clock", "Opening real-time world clock.")
+            CustomActionType.TOGGLE_FLASHLIGHT -> h(torch("toggle"))
+            CustomActionType.CHECK_BATTERY -> h(battery())
+            CustomActionType.CHECK_PHONE_STATUS -> h(deviceMonitor?.buildSummarySpeech() ?: "${battery()} ${network()}")
+            CustomActionType.OPEN_SETTINGS -> h(settings(Settings.ACTION_SETTINGS, "Settings"))
+            CustomActionType.OPEN_WIFI_SETTINGS -> h(settings(Settings.ACTION_WIFI_SETTINGS, "Wi-Fi settings"))
+            CustomActionType.OPEN_BLUETOOTH_SETTINGS -> h(settings(Settings.ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings"))
+            CustomActionType.OPEN_APP_BY_NAME -> {
+                val appName = cmd.actionArg.trim().lowercase(Locale.ROOT)
+                h(
+                    if (appName.isBlank()) "Please specify an app name for \"${cmd.phrase}\" in Custom Voice Commands."
+                    else openInstalled(appName)
+                )
+            }
+        }
     }
 
     private fun call(target: String): String {

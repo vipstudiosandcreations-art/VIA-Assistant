@@ -22,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -158,8 +159,8 @@ fun VoiceScreen(vm: ViaViewModel, back: () -> Unit) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Language: " + vm.voice.label(vm.language) + ". Say \"Hey VIA\" + your question.\n" +
-                        "VIA listens only while the mic is active.",
+                    "Language: " + vm.voice.label(vm.language) + " · Voice: " + vm.voiceId +
+                        ". Say \"Hey VIA\" + your question.\nVIA listens only while the mic is active.",
                     fontSize = 12.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -184,7 +185,7 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: Dp, enabled: Boolean
 private data class Cmd(val title: String, val example: String, val run: String?)
 
 @Composable
-fun CommandsScreen(vm: ViaViewModel, back: () -> Unit) {
+fun CommandsScreen(vm: ViaViewModel, go: (String) -> Unit, back: () -> Unit) {
     val groups = listOf(
         "Apps" to listOf(
             Cmd("Open YouTube", "open youtube", "open youtube"),
@@ -235,6 +236,28 @@ fun CommandsScreen(vm: ViaViewModel, back: () -> Unit) {
                         "Tap a command to run it, or say or type the example. Basic Hindi and Kannada keywords work for a few commands. Replies are in English for now.",
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(8.dp))
+                    GlowCard(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Custom Voice Commands", fontWeight = FontWeight.Bold, color = ViaGold)
+                                Text(
+                                    "${vm.customCommands.size} personalized voice phrase(s) mapped to app actions.",
+                                    fontSize = 12.sp,
+                                    color = ViaCyan
+                                )
+                            }
+                            Button(
+                                onClick = { go("custom_commands") },
+                                modifier = Modifier.testTag("commands_open_custom_button")
+                            ) {
+                                Text("Manage")
+                            }
+                        }
+                    }
                     if (vm.lastReply.isNotBlank() && shown.isNotBlank()) {
                         Spacer(Modifier.height(6.dp))
                         GlowCard(Modifier.fillMaxWidth()) { Text(vm.lastReply, Modifier.padding(12.dp), fontSize = 14.sp) }

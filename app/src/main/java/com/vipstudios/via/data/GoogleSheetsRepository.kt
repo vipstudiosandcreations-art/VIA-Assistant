@@ -169,6 +169,17 @@ class GoogleSheetsRepository {
         }
     }
 
+    suspend fun fetchLatestOrCached(
+        context: Context,
+        maxCacheAgeMs: Long = 120_000L
+    ): SheetsFetchOutcome {
+        val cached = latestSnapshot
+        if (cached != null && (System.currentTimeMillis() - cached.fetchedAtMs) < maxCacheAgeMs) {
+            return SheetsFetchOutcome.Success(cached)
+        }
+        return fetchLatest(context)
+    }
+
     suspend fun fetchLatest(context: Context): SheetsFetchOutcome {
         val appContext = context.applicationContext
         val token = obtainValidTokenSilently(appContext)

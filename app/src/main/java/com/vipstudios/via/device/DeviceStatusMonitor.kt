@@ -21,10 +21,20 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.vipstudios.via.BuildConfig
 import com.vipstudios.via.R
+import com.vipstudios.via.data.BatterySample
+import com.vipstudios.via.data.Store
 import com.vipstudios.via.time.WorldTimeEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private const val TAG = "DeviceStatusMonitor"
@@ -57,14 +67,21 @@ data class BatteryAlertEvent(
  * Monitors read-only device status (battery, charging, temp, health, Wi-Fi, network, Bluetooth,
  * flashlight, model) and emits deduplicated battery alerts without repeating the same alert.
  */
-class DeviceStatusMonitor(context: Context) {
+class DeviceStatusMonitor(
+    context: Context,
+    private val store: Store? = null
+) {
     private val ctx = context.applicationContext
 
     val status = MutableStateFlow(PhoneStatusSnapshot())
+    val batteryHistory = MutableStateFlow<List<BatterySample>>(store?.batteryHistory().orEmpty())
     val alerts = MutableSharedFlow<BatteryAlertEvent>(extraBufferCapacity = 8)
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var sampleTickerJob: Job? = null
     private var started = false
     private var torchOn = false
+    private var lastBatteryIntent: Intent? = null
 
     // Alert deduplication state
     private var lastAlertKey: String? = null
@@ -102,14 +119,24 @@ class DeviceStatusMonitor(context: Context) {
             val cm = ctx.getSystemService(ConnectivityManager::class.java)
             cm?.registerDefaultNetworkCallback(networkCallback)
         } catch (e: Exception) {
-            Log.w(TAG, "Unable to register NetworkCallback", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "Unable to register NetworkCallback", e)
+            else Log.w(TAG, "Unable to register NetworkCallback: ${e.javaClass.simpleName}")
         }
         refreshNow()
+        sampleTickerJob?.cancel()
+        sampleTickerJob = scope.launch {
+            while (isActive && started) {
+                delay(15_000L)
+                if (started) refreshNow()
+            }
+        }
     }
 
     fun stop() {
         if (!started) return
         started = false
+        sampleTickerJob?.cancel()
+        sampleTickerJob = null
         try {
             ctx.unregisterReceiver(batteryAndStateReceiver)
         } catch (_: Exception) {
@@ -122,7 +149,12 @@ class DeviceStatusMonitor(context: Context) {
     }
 
     fun refreshNow(batteryIntent: Intent? = null): PhoneStatusSnapshot {
-        val bIntent = batteryIntent ?: ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        if (batteryIntent != null) {
+            lastBatteryIntent = batteryIntent
+        }
+        val bIntent = batteryIntent
+            ?: ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?: lastBatteryIntent
         val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
         val bm = ctx.getSystemService(BatteryManager::class.java)
@@ -193,9 +225,25 @@ class DeviceStatusMonitor(context: Context) {
             torchOn = torchOn
         )
         status.value = snap
+        recordBatterySample(pct = pct, isCharging = isCharging, tempC = tempC)
 
         evaluateBatteryAlerts(pct = pct, isCharging = isCharging, battStatus = battStatus)
         return snap
+    }
+
+    private fun recordBatterySample(pct: Int, isCharging: Boolean, tempC: Float?) {
+        val now = System.currentTimeMillis()
+        val current = batteryHistory.value
+        val last = current.lastOrNull()
+        val shouldRecord = last == null ||
+            last.percent != pct ||
+            last.isCharging != isCharging ||
+            (now - last.timestampMs) >= 15_000L
+        if (!shouldRecord) return
+
+        val updated = (current + BatterySample(now, pct, isCharging, tempC)).takeLast(48)
+        batteryHistory.value = updated
+        store?.saveBatteryHistory(updated)
     }
 
     private fun evaluateBatteryAlerts(pct: Int, isCharging: Boolean, battStatus: Int) {
@@ -293,7 +341,8 @@ class DeviceStatusMonitor(context: Context) {
                 .build()
             nm.notify(NOTIF_BATTERY_ID, notif)
         } catch (e: Exception) {
-            Log.w(TAG, "Unable to post battery notification", e)
+            if (BuildConfig.DEBUG) Log.w(TAG, "Unable to post battery notification", e)
+            else Log.w(TAG, "Unable to post battery notification: ${e.javaClass.simpleName}")
         }
     }
 

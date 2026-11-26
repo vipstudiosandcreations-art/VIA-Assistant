@@ -71,6 +71,14 @@ class Store(context: Context) {
         get() = sp.getBoolean("call_monitoring_enabled", false)
         set(v) = sp.edit().putBoolean("call_monitoring_enabled", v).apply()
 
+    var voiceId: String
+        get() = sp.getString("elevenlabs_voice_id", DEFAULT_VOICE_ID)?.trim().orEmpty().ifEmpty { DEFAULT_VOICE_ID }
+        set(v) = sp.edit().putString("elevenlabs_voice_id", v.trim().ifEmpty { DEFAULT_VOICE_ID }).apply()
+
+    var neuralVoiceEnabled: Boolean
+        get() = sp.getBoolean("neural_voice_enabled", true)
+        set(v) = sp.edit().putBoolean("neural_voice_enabled", v).apply()
+
     // ---------- chat ----------
     fun messages(): List<ChatMessage> = read("messages") {
         ChatMessage(it.getLong("id"), it.getBoolean("u"), it.getString("t"), it.getLong("ts"))
@@ -120,6 +128,75 @@ class Store(context: Context) {
     fun clearMessages() = sp.edit().remove("messages").apply()
     fun clearMemory() = sp.edit().remove("memory").apply()
 
+    // ---------- battery trend samples ----------
+    fun batteryHistory(): List<BatterySample> = read("battery_history") {
+        val temp = if (it.has("temp") && !it.isNull("temp")) it.getDouble("temp").toFloat() else null
+        BatterySample(
+            timestampMs = it.getLong("ts"),
+            percent = it.getInt("pct"),
+            isCharging = it.getBoolean("chg"),
+            tempC = temp
+        )
+    }
+
+    fun saveBatteryHistory(list: List<BatterySample>) = write("battery_history", list.takeLast(48)) {
+        JSONObject()
+            .put("ts", it.timestampMs)
+            .put("pct", it.percent)
+            .put("chg", it.isCharging)
+            .apply {
+                if (it.tempC != null) put("temp", it.tempC.toDouble())
+            }
+    }
+
+    // ---------- custom voice command mappings ----------
+    fun customCommands(): List<CustomVoiceCommand> = read("custom_commands") {
+        CustomVoiceCommand(
+            id = it.getLong("id"),
+            phrase = it.getString("p"),
+            actionId = it.getString("a"),
+            actionArg = it.optString("arg", ""),
+            createdAt = it.optLong("ts", System.currentTimeMillis())
+        )
+    }
+
+    private fun saveCustomCommands(list: List<CustomVoiceCommand>) = write("custom_commands", list) {
+        JSONObject()
+            .put("id", it.id)
+            .put("p", it.phrase)
+            .put("a", it.actionId)
+            .put("arg", it.actionArg)
+            .put("ts", it.createdAt)
+    }
+
+    fun addCustomCommand(phrase: String, actionId: String, actionArg: String = "") {
+        val cleanPhrase = phrase.trim()
+        if (cleanPhrase.isEmpty()) return
+        val item = CustomVoiceCommand(
+            id = newId(),
+            phrase = cleanPhrase,
+            actionId = actionId,
+            actionArg = actionArg.trim(),
+            createdAt = System.currentTimeMillis()
+        )
+        saveCustomCommands(customCommands() + item)
+    }
+
+    fun updateCustomCommand(id: Long, phrase: String, actionId: String, actionArg: String = "") {
+        val cleanPhrase = phrase.trim()
+        if (cleanPhrase.isEmpty()) return
+        saveCustomCommands(
+            customCommands().map {
+                if (it.id == id) it.copy(phrase = cleanPhrase, actionId = actionId, actionArg = actionArg.trim())
+                else it
+            }
+        )
+    }
+
+    fun deleteCustomCommand(id: Long) {
+        saveCustomCommands(customCommands().filter { it.id != id })
+    }
+
     // ---------- helpers ----------
     private fun <T> read(key: String, f: (JSONObject) -> T): List<T> {
         val s = sp.getString(key, null) ?: return emptyList()
@@ -135,5 +212,9 @@ class Store(context: Context) {
         val a = JSONArray()
         list.forEach { a.put(f(it)) }
         sp.edit().putString(key, a.toString()).apply()
+    }
+
+    companion object {
+        const val DEFAULT_VOICE_ID = "K24eC7JpUgk8zMtQYrpV"
     }
 }

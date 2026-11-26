@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,6 +17,8 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.vipstudios.via.BuildConfig
+import com.vipstudios.via.data.Store
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -41,23 +45,30 @@ enum class VoiceState { Idle, Listening, Speaking }
  */
 class VoiceController(context: Context) {
     private val ctx = context.applicationContext
+    private val store = Store(ctx)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var activeAudioFile: File? = null
     @Volatile private var ttsReady = false
     private var lipJob: Job? = null
     private var listenWatchdogJob: Job? = null
+    private var speakJob: Job? = null
 
     private val listenSessionSeq = AtomicInteger(0)
     @Volatile private var activeSessionId = 0
     @Volatile private var sessionDelivered = false
     @Volatile private var userStoppedManually = false
     @Volatile private var usedOnDeviceFallback = false
+    private val speakSessionSeq = AtomicInteger(0)
+    @Volatile private var activeSpeakSessionId = 0
 
     @Volatile private var doneCb: (() -> Unit)? = null
     @Volatile private var activeUtteranceText: String = ""
+    @Volatile private var lastTtsLangTag: String? = null
     @Volatile private var wordPulseTarget: Float = 0.55f
     @Volatile private var wordPulseTime: Long = 0L
 
@@ -82,6 +93,7 @@ class VoiceController(context: Context) {
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
+                    tts?.setSpeechRate(1.06f)
                 } else {
                     Log.w(TAG, "TextToSpeech initialization failed with status=$status")
                 }
@@ -169,7 +181,13 @@ class VoiceController(context: Context) {
         SpeechRecognizer.isRecognitionAvailable(ctx) ||
             (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx))
 
-    fun isTtsReady(): Boolean = ttsReady
+    fun activeVoiceId(): String = store.voiceId
+
+    fun isNeuralVoiceConfigured(): Boolean = ElevenLabsTtsClient.isConfigured()
+
+    fun isNeuralVoiceActive(): Boolean = store.neuralVoiceEnabled && ElevenLabsTtsClient.isConfigured()
+
+    fun isTtsReady(): Boolean = ttsReady || isNeuralVoiceActive()
 
     fun isTtsLanguageAvailable(lang: String): Boolean {
         val engine = tts ?: return false
@@ -254,10 +272,11 @@ class VoiceController(context: Context) {
             override fun onEndOfSpeech() {
                 if (sessionId != activeSessionId) return
                 level.value = 0f
-                // Watchdog in case OEM speech service stalls without calling onResults/onError
+                // Fast watchdog in case OEM speech service stalls after end-of-speech
                 listenWatchdogJob?.cancel()
                 listenWatchdogJob = scope.launch {
-                    delay(6500L)
+                    val waitMs = if (partial.value.isNotBlank()) 1800L else 4200L
+                    delay(waitMs)
                     if (sessionId == activeSessionId && !sessionDelivered && state.value == VoiceState.Listening) {
                         val fallbackPartial = partial.value.trim()
                         if (fallbackPartial.isNotEmpty()) {
@@ -297,7 +316,16 @@ class VoiceController(context: Context) {
 
             override fun onError(code: Int) {
                 if (sessionId != activeSessionId || sessionDelivered) return
-                Log.w(TAG, "SpeechRecognizer onError code=$code (onDeviceFallback=$usedOnDeviceFallback)")
+                val isExpectedSilenceOrCancel = code == SpeechRecognizer.ERROR_NO_MATCH ||
+                    code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                    code == SpeechRecognizer.ERROR_CLIENT
+                if (isExpectedSilenceOrCancel) {
+                    if (BuildConfig.DEBUG) {
+                        Log.d(TAG, "SpeechRecognizer ended code=$code (onDeviceFallback=$usedOnDeviceFallback)")
+                    }
+                } else {
+                    Log.w(TAG, "SpeechRecognizer onError code=$code (onDeviceFallback=$usedOnDeviceFallback)")
+                }
 
                 // If network speech fails and on-device recognition exists, transparently retry offline once.
                 if ((code == SpeechRecognizer.ERROR_NETWORK || code == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) &&
@@ -353,6 +381,9 @@ class VoiceController(context: Context) {
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 350L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 650L)
             if (preferOnDevice) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
@@ -412,44 +443,153 @@ class VoiceController(context: Context) {
                 onDone()
                 return@post
             }
-            val engine = tts
-            if (engine == null || !ttsReady) {
-                error.value = "Voice output is not ready on this device yet."
-                state.value = VoiceState.Idle
-                onDone()
+
+            stopSpeakingInternal(invokeCallback = false)
+            val sessionId = speakSessionSeq.incrementAndGet()
+            activeSpeakSessionId = sessionId
+            doneCb = onDone
+
+            if (isNeuralVoiceActive()) {
+                val targetVoiceId = store.voiceId
+                error.value = null
+                activeUtteranceText = cleanText
+                wordPulseTime = System.currentTimeMillis()
+                state.value = VoiceState.Speaking
+                startLipSyncDriver()
+
+                speakJob = scope.launch {
+                    val res = ElevenLabsTtsClient.synthesizeToCacheFile(ctx, cleanText, targetVoiceId)
+                    if (sessionId != activeSpeakSessionId || !isActive) {
+                        res.getOrNull()?.delete()
+                        return@launch
+                    }
+                    res.fold(
+                        onSuccess = { file ->
+                            playAudioFileWithFallback(sessionId, file, cleanText, lang)
+                        },
+                        onFailure = { err ->
+                            if (BuildConfig.DEBUG) {
+                                Log.d(TAG, "ElevenLabs TTS unavailable (${err.javaClass.simpleName}); falling back to Android TTS")
+                            }
+                            speakWithAndroidTts(sessionId, cleanText, lang)
+                        }
+                    )
+                }
                 return@post
             }
 
-            val requestedLocale = Locale.forLanguageTag(tag(lang))
+            speakWithAndroidTts(sessionId, cleanText, lang)
+        }
+    }
+
+    private fun playAudioFileWithFallback(sessionId: Int, file: File, cleanText: String, lang: String) {
+        if (sessionId != activeSpeakSessionId) {
+            file.delete()
+            return
+        }
+        releaseMediaPlayer()
+        activeAudioFile = file
+        try {
+            val mp = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(file.absolutePath)
+                setOnCompletionListener {
+                    if (sessionId == activeSpeakSessionId) {
+                        releaseMediaPlayer()
+                        finishSpeaking()
+                    }
+                }
+                setOnErrorListener { _, what, extra ->
+                    Log.w(TAG, "MediaPlayer playback error ($what/$extra); falling back to Android TTS")
+                    releaseMediaPlayer()
+                    if (sessionId == activeSpeakSessionId) {
+                        speakWithAndroidTts(sessionId, cleanText, lang)
+                    }
+                    true
+                }
+                setOnPreparedListener { player ->
+                    if (sessionId != activeSpeakSessionId) {
+                        releaseMediaPlayer()
+                        return@setOnPreparedListener
+                    }
+                    wordPulseTime = System.currentTimeMillis()
+                    player.start()
+                }
+                prepareAsync()
+            }
+            mediaPlayer = mp
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaPlayer setup failed; falling back to Android TTS", e)
+            releaseMediaPlayer()
+            speakWithAndroidTts(sessionId, cleanText, lang)
+        }
+    }
+
+    private fun speakWithAndroidTts(sessionId: Int, cleanText: String, lang: String) {
+        if (sessionId != activeSpeakSessionId) return
+        val engine = tts
+        if (engine == null || !ttsReady) {
+            error.value = "Voice output is not ready on this device yet."
+            finishSpeaking()
+            return
+        }
+
+        val targetTag = tag(lang)
+        if (lastTtsLangTag != targetTag) {
+            val requestedLocale = Locale.forLanguageTag(targetTag)
             val res = engine.setLanguage(requestedLocale)
             if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
                 // Fall back to default English voice if Kannada/Hindi TTS pack isn't installed so speech still completes gracefully
                 val fallback = if (lang != "en") engine.setLanguage(Locale.forLanguageTag("en-IN")) else res
                 if (fallback == TextToSpeech.LANG_MISSING_DATA || fallback == TextToSpeech.LANG_NOT_SUPPORTED) {
                     error.value = "${label(lang)} voice isn't installed. Open phone Settings → Text-to-speech to install it."
-                    state.value = VoiceState.Idle
-                    onDone()
-                    return@post
+                    finishSpeaking()
+                    return
                 } else {
+                    lastTtsLangTag = "en-IN"
                     error.value = "${label(lang)} TTS voice pack isn't installed; using fallback voice."
                 }
             } else {
+                lastTtsLangTag = targetTag
                 error.value = null
             }
-
-            activeUtteranceText = cleanText
-            wordPulseTime = System.currentTimeMillis()
-            doneCb = onDone
-            state.value = VoiceState.Speaking
-            startLipSyncDriver()
-
-            val speakCode = engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, "via-utt-${System.currentTimeMillis()}")
-            if (speakCode != TextToSpeech.SUCCESS) {
-                Log.w(TAG, "TextToSpeech.speak returned error code=$speakCode")
-                error.value = "Voice output failed to start."
-                finishSpeaking()
-            }
+        } else {
+            error.value = null
         }
+
+        activeUtteranceText = cleanText
+        wordPulseTime = System.currentTimeMillis()
+        state.value = VoiceState.Speaking
+        startLipSyncDriver()
+
+        val speakCode = engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, "via-utt-${System.currentTimeMillis()}")
+        if (speakCode != TextToSpeech.SUCCESS) {
+            Log.w(TAG, "TextToSpeech.speak returned error code=$speakCode")
+            error.value = "Voice output failed to start."
+            finishSpeaking()
+        }
+    }
+
+    private fun releaseMediaPlayer() {
+        try {
+            mediaPlayer?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            mediaPlayer?.release()
+        } catch (_: Exception) {
+        }
+        mediaPlayer = null
+        try {
+            activeAudioFile?.delete()
+        } catch (_: Exception) {
+        }
+        activeAudioFile = null
     }
 
     fun stopSpeaking() {
@@ -459,10 +599,14 @@ class VoiceController(context: Context) {
     }
 
     private fun stopSpeakingInternal(invokeCallback: Boolean) {
+        activeSpeakSessionId = speakSessionSeq.incrementAndGet()
+        speakJob?.cancel()
+        speakJob = null
         lipJob?.cancel()
         mouthLevel.value = 0f
         val cb = doneCb
         doneCb = null
+        releaseMediaPlayer()
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -499,10 +643,13 @@ class VoiceController(context: Context) {
     }
 
     fun shutdown() {
+        activeSpeakSessionId = speakSessionSeq.incrementAndGet()
+        speakJob?.cancel()
         listenWatchdogJob?.cancel()
         lipJob?.cancel()
         scope.cancel()
         destroyRecognizerSafely()
+        releaseMediaPlayer()
         try {
             tts?.stop()
             tts?.shutdown()
